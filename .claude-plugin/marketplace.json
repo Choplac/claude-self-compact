@@ -1,0 +1,5 @@
+{
+  "name": "claude-self-compact",
+  "owner": { "name": "Choplac" },
+  "plugins": [{ "name": "compact-at-stop", "source": "./" }]
+}

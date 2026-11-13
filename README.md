@@ -1,0 +1,37 @@
+# compact-at-stop
+
+A Claude Code mod that lets a session compact its own conversation at a stopping place.
+
+The model calls the tool `mcp__compact-at-stop__compact` as the last call of its turn. Nothing happens
+until that turn has ended; then the mod asks Claude Code to compact, the same call `/compact` makes.
+Nothing is typed into a terminal, so it does not depend on a terminal program or a tab title.
+
+## Install
+
+In Claude Code:
+
+```
+/plugin install compact-at-stop --marketplace Choplac/claude-self-compact
+```
+
+From a shell: `claude plugin install compact-at-stop --marketplace Choplac/claude-self-compact`.
+Desktop app: + → Plugins → Add marketplace → `Choplac/claude-self-compact`.
+
+## Tool input
+
+- `keep`: what the summary must keep (open questions, state, who waits on whom). Required.
+- `resume`: optional prompt that starts the next turn after the compaction. Left out, the session goes idle.
+- `cancel: true`: withdraws a request made earlier in the same turn.
+
+## Guards
+
+- Helper agents (subagents) and other plugins are refused: only the main session's own model can ask.
+- At most one self-compaction per 30 minutes per session.
+- A turn that was interrupted, refused or ended in an error drops the request.
+- A request never carries over to a later turn or to another session (for example after `/resume`).
+- If the session stays busy for about 10 seconds after the turn, the request is given up with a notice.
+
+## Needs
+
+A Claude Code build with hooks modules (plugin mods). Written against 2.1.323. That interface is early
+access and may change.
