@@ -121,3 +121,30 @@ test('a store that refuses to save the reminder time breaks nothing', async ($, 
   expect(seen[1]?.length).toBe(1)
   expect(seen[2]).toBeUndefined()
 })
+
+test('the prompt is handed on before the plugin calls the engine for anything', async ($, on) => {
+  const order: string[] = []
+  const clock = mock.clock(on, { now: 10 * HOUR })
+  on('session.id', () => {
+    order.push('session.id')
+    return { value: 's1' }
+  })
+  on('store.get', () => ({ value: undefined }))
+  on('store.set', () => {
+    order.push('store.set')
+    return { value: undefined }
+  })
+  on('session.usage', () => ({ value: { startedAt: 0, context: { ...LARGE, window: 1_000_000 }, rateLimits: [] } }))
+  on('prompt.submit', (_, e) => {
+    order.push(e.context === undefined ? 'prompt' : 'prompt+reminder')
+    return { text: e.text }
+  })
+  await $.prompt.submit(peer)
+  await clock.settle()
+  order.length = 0
+  await $.prompt.submit(typed)
+  await clock.settle()
+  expect(order[0]).toBe('prompt+reminder')
+  expect(order).toContain('store.set')
+  expect(order).toContain('session.id')
+})

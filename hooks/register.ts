@@ -104,6 +104,7 @@ export const register: Register = on => {
     // Nothing is awaited here before the prompt goes on, and nothing here can throw: the reminder is
     // decided from the figures already read, and a fresh reading starts behind the prompt.
     let note: string | undefined
+    let save: { key: string; at: number } | undefined
     try {
       // Not a slash command, not a notice the engine queued for itself (isMeta), not another plugin's
       // or another session's prompt.
@@ -114,8 +115,7 @@ export const register: Register = on => {
         const isLarge = f.percent >= NUDGE_PERCENT && f.tokens >= NUDGE_TOKENS
         if (isLarge && compacted + MIN_GAP_MS <= f.now && nudged + NUDGE_GAP_MS <= f.now) {
           lastNudge.set(f.sessionId, f.now)
-          const key = `nudge:${f.sessionId}`
-          void (async () => $.store.set(key, f.now))().catch(() => undefined) // not waited for
+          save = { key: `nudge:${f.sessionId}`, at: f.now }
           note = nudge(f.percent)
         }
       }
@@ -123,7 +123,13 @@ export const register: Register = on => {
       note = undefined
     }
     const sent = next(note === undefined ? e : { ...e, context: [...(e.context ?? []), note] })
+    // Only now, with the prompt on its way, is the engine called: the reminder time is saved (not
+    // waited for) and a fresh reading starts.
     try {
+      if (save !== undefined) {
+        const { key, at } = save
+        void (async () => $.store.set(key, at))().catch(() => undefined)
+      }
       readFigures($)
     } catch {
       // the prompt is already on its way
