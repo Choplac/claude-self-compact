@@ -32,7 +32,8 @@ relayed chat reply), and the conversation fills at least 30% of its context wind
 least 150,000 tokens), and the session has not compacted itself in the last 30 minutes, one note rides
 beside that prompt. The model reads it; the person does not see it. It says to compact at the end of the
 turn if that is a stopping place, and to carry on otherwise. At most one reminder per 45 minutes. A prompt is
-never held up for it: figures that take longer than half a second to read mean no reminder that time.
+never held up for it: the size and the times are read in the background (at session start, at the end of
+each turn, after each prompt), and a prompt is judged from the last reading; no reading yet means no reminder.
 
 ## Guards
 

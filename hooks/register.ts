@@ -1,4 +1,4 @@
-import type { Register } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
 
 // A session asks for its own compaction at a stopping place; it runs once the turn has ended,
 // through the engine's own compaction call (what /compact does). Nothing is typed into a terminal.
@@ -23,7 +23,6 @@ const NUDGE_ORIGINS: ReadonlySet<string> = new Set(['composer', 'bridge', 'task-
 const NUDGE_PERCENT = 30 // share of the context window in use, and
 const NUDGE_TOKENS = 150_000 // tokens in use: both must be reached (a small window is not nagged early)
 const NUDGE_GAP_MS = 45 * 60_000 // between two reminders of one session
-const NUDGE_READS_MS = 500 // the most a prompt waits for the reminder's figures; later than that, no reminder
 
 type Job = { keep: string; resume?: string; turnId: string; sessionId: string }
 
@@ -41,6 +40,30 @@ let writes: Promise<unknown> = Promise.resolve() // stored-time writes, in order
 // Time of the last reminder per session id; $.store (`nudge:<id>`) carries it over a reload or restart.
 const lastNudge = new Map<string, number>()
 
+// The prompt hook awaits nothing of the reminder's: it decides from these figures, read in the background
+// when the session starts, when a main turn ends and after each prompt. `now` is the time of that reading,
+// so the gaps are judged as of the last turn's end; figures not read yet, or not readable, mean no reminder.
+type Figures = { sessionId: string; now: number; percent: number; tokens: number; compacted: number; nudged: number }
+let figures: Figures | undefined
+let reading = 0 // the newest reading wins; an older one that ends late is dropped
+
+const readFigures = ($: EngineInterface): void => {
+  const mine = ++reading
+  void (async () => {
+    try {
+      const sessionId = await $.session.id()
+      const now = await $.clock.now()
+      const { context } = await $.session.usage()
+      const compacted = Number((await $.store.get(`last:${sessionId}`)) ?? 0)
+      const nudged = Number((await $.store.get(`nudge:${sessionId}`)) ?? 0)
+      if (mine !== reading) return
+      figures = { sessionId, now, percent: context.percent ?? 0, tokens: context.tokens ?? 0, compacted, nudged }
+    } catch {
+      if (mine === reading) figures = undefined
+    }
+  })()
+}
+
 const nudge = (percent: number): string =>
   `compact-at-stop reminder: this conversation fills about ${percent}% of its context window and has not ` +
   'compacted itself for a while. When the work of this turn ends at a stopping place (its result is reported ' +
@@ -53,6 +76,8 @@ const clean = (v: unknown): string | undefined =>
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    figures = undefined
+    readFigures($)
     await $.tool.register({
       name: NAME,
       isDeferred: false,
@@ -75,44 +100,40 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('prompt.submit', async ($, e, next) => {
-    // Not a slash command, not a notice the engine queued for itself (isMeta), not another plugin's
-    // or another session's prompt.
-    if (!NUDGE_ORIGINS.has(e.origin.kind) || e.command !== undefined || e.isMeta === true) return next(e)
-    // The figures are read beside a short wait: a read that stalls or fails means no reminder, and the
-    // prompt goes on as typed, never held up for longer than NUDGE_READS_MS.
-    const due = (async (): Promise<{ sessionId: string; now: number; percent: number } | undefined> => {
-      try {
-        const sessionId = await $.session.id()
-        const now = await $.clock.now()
-        const { context } = await $.session.usage()
-        const percent = context.percent ?? 0
-        if (percent < NUDGE_PERCENT || (context.tokens ?? 0) < NUDGE_TOKENS) return undefined
-        const last = Math.max(Number((await $.store.get(`last:${sessionId}`)) ?? 0), lastMem.get(sessionId) ?? 0)
-        if (last + MIN_GAP_MS > now) return undefined
-        const nudged = Math.max(Number((await $.store.get(`nudge:${sessionId}`)) ?? 0), lastNudge.get(sessionId) ?? 0)
-        if (nudged + NUDGE_GAP_MS > now) return undefined
-        return { sessionId, now, percent }
-      } catch {
-        return undefined
-      }
-    })()
-    let waiting = true
-    const found = await Promise.race([
-      due,
-      new Promise<undefined>(resolve => $.clock.after(NUDGE_READS_MS, () => (waiting ? resolve(undefined) : undefined))),
-    ])
-    waiting = false
+  on('prompt.submit', ($, e, next) => {
+    // Nothing is awaited here before the prompt goes on, and nothing here can throw: the reminder is
+    // decided from the figures already read, and a fresh reading starts behind the prompt.
     let note: string | undefined
-    if (found !== undefined && (lastNudge.get(found.sessionId) ?? 0) + NUDGE_GAP_MS <= found.now) {
-      lastNudge.set(found.sessionId, found.now)
-      void $.store.set(`nudge:${found.sessionId}`, found.now).catch(() => undefined) // not waited for
-      note = nudge(found.percent)
+    try {
+      // Not a slash command, not a notice the engine queued for itself (isMeta), not another plugin's
+      // or another session's prompt.
+      const f = figures
+      if (f !== undefined && NUDGE_ORIGINS.has(e.origin.kind) && e.command === undefined && e.isMeta !== true) {
+        const compacted = Math.max(f.compacted, lastMem.get(f.sessionId) ?? 0)
+        const nudged = Math.max(f.nudged, lastNudge.get(f.sessionId) ?? 0)
+        const isLarge = f.percent >= NUDGE_PERCENT && f.tokens >= NUDGE_TOKENS
+        if (isLarge && compacted + MIN_GAP_MS <= f.now && nudged + NUDGE_GAP_MS <= f.now) {
+          lastNudge.set(f.sessionId, f.now)
+          const key = `nudge:${f.sessionId}`
+          void (async () => $.store.set(key, f.now))().catch(() => undefined) // not waited for
+          note = nudge(f.percent)
+        }
+      }
+    } catch {
+      note = undefined
     }
-    return next(note === undefined ? e : { ...e, context: [...(e.context ?? []), note] })
+    const sent = next(note === undefined ? e : { ...e, context: [...(e.context ?? []), note] })
+    try {
+      readFigures($)
+    } catch {
+      // the prompt is already on its way
+    }
+    return sent
   })
 
   on('session.end', ($, e, next) => {
+    figures = undefined
+    reading += 1
     // The process may go on under another session (/resume, /clear): nothing asked here follows it.
     activeTurn = undefined
     pending = undefined
@@ -170,6 +191,7 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => {
     const answer = await next(e)
     if (e.agentId !== undefined) return answer
+    readFigures($) // the size as this turn left it, for the next prompt's reminder
     if (activeTurn === e.turnId) activeTurn = undefined
     if (pending === undefined) return answer
     const job = pending
