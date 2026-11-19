@@ -1,1 +1,1 @@
-{ "name": "compact-at-stop", "version": "0.1.0", "license": "MIT", "description": "Lets a session compact itself at a stopping place: the model asks, the compaction runs when its turn has ended." }
+{ "name": "compact-at-stop", "version": "0.2.0", "license": "MIT", "description": "Lets a session compact itself at a stopping place: the model asks, the compaction runs when its turn has ended. A large conversation is reminded to ask." }

@@ -23,6 +23,14 @@ Desktop app: + → Plugins → Add marketplace → `Choplac/claude-self-compact`
 - `resume`: optional prompt that starts the next turn after the compaction. Left out, the session goes idle.
 - `cancel: true`: withdraws a request made earlier in the same turn.
 
+## Reminder
+
+A session told to compact "at a stopping place" tends to forget, since nothing tells it when one has come.
+So when the person sends a prompt, and the conversation fills at least 30% of its context window (and at
+least 150,000 tokens), and the session has not compacted itself in the last 30 minutes, one note rides
+beside that prompt. The model reads it; the person does not see it. It says to compact at the end of the
+turn if that is a stopping place, and to carry on otherwise. At most one reminder per 45 minutes.
+
 ## Guards
 
 - Helper agents (subagents) and other plugins are refused: only the main session's own model can ask.

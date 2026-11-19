@@ -10,6 +10,13 @@ const MAX_TEXT = 4000
 const TRIES = 10 // the engine refuses a compaction while a turn still runs
 const TRY_EVERY_MS = 1000
 
+// The reminder. A session asked to compact "at a stopping place" forgets to: nothing tells it when one
+// has come. So when the person sends a prompt and the conversation is large and has gone a while without
+// compacting itself, one note rides beside that prompt. The model reads it; the person never sees it.
+const NUDGE_PERCENT = 30 // share of the context window in use, and
+const NUDGE_TOKENS = 150_000 // tokens in use: both must be reached (a small window is not nagged early)
+const NUDGE_GAP_MS = 45 * 60_000 // between two reminders of one session
+
 type Job = { keep: string; resume?: string; turnId: string; sessionId: string }
 
 // Module variables start over on a hot reload; that only ever drops a request, never invents one.
@@ -23,6 +30,14 @@ let scheduled: object | undefined // token of the one compaction waiting to run;
 // so the gap holds in this process even when $.store fails. $.store carries it over a reload or restart.
 const lastMem = new Map<string, number>()
 let writes: Promise<unknown> = Promise.resolve() // stored-time writes, in order
+const lastNudge = new Map<string, number>() // time of the last reminder per session id; starts over on a reload
+
+const nudge = (percent: number): string =>
+  `compact-at-stop reminder: this conversation fills about ${percent}% of its context window and has not ` +
+  'compacted itself for a while. When the work of this turn ends at a stopping place (its result is reported ' +
+  'or handed off, and nothing of yours is still running), write the handoff where a later session finds it ' +
+  'and call the compact tool as the last call of the turn. If this turn does not end at a stopping place, ' +
+  'carry on and leave this reminder unmentioned.'
 
 const clean = (v: unknown): string | undefined =>
   typeof v === 'string' && v.trim() !== '' ? v.trim().slice(0, MAX_TEXT) : undefined
@@ -49,6 +64,28 @@ export const register: Register = on => {
       },
     })
     return next(e)
+  })
+
+  on('prompt.submit', async ($, e, next) => {
+    // Only a prompt the person sent: not a slash command, a machine-made prompt or another plugin's.
+    const isPerson = e.origin.kind === 'composer' || e.origin.kind === 'bridge'
+    if (!isPerson || e.command !== undefined || e.isMeta === true) return next(e)
+    let note: string | undefined
+    try {
+      const sessionId = await $.session.id()
+      const now = await $.clock.now()
+      const { context } = await $.session.usage()
+      const percent = context.percent ?? 0
+      const last = Math.max(Number((await $.store.get(`last:${sessionId}`)) ?? 0), lastMem.get(sessionId) ?? 0)
+      const isLarge = percent >= NUDGE_PERCENT && (context.tokens ?? 0) >= NUDGE_TOKENS
+      if (isLarge && last + MIN_GAP_MS <= now && (lastNudge.get(sessionId) ?? 0) + NUDGE_GAP_MS <= now) {
+        lastNudge.set(sessionId, now)
+        note = nudge(percent)
+      }
+    } catch {
+      // Figures that cannot be read mean no reminder; the prompt goes on as typed.
+    }
+    return next(note === undefined ? e : { ...e, context: [...(e.context ?? []), note] })
   })
 
   on('session.end', ($, e, next) => {
