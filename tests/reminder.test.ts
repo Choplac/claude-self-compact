@@ -37,3 +37,18 @@ test('a session that compacted itself in the last 30 minutes is not reminded', a
   await $.prompt.submit(typed)
   expect(seen[0]?.context).toBeUndefined()
 })
+
+test('a background notification (a finished job, a Stop hook wake-up) is reminded too', async ($, on) => {
+  const seen = world(on, { tokens: 400_000, percent: 40 }, 10 * HOUR)
+  await $.prompt.submit({ ...typed, text: 'job done', origin: { kind: 'task-notification' } })
+  expect(seen[0]?.context?.[0]).toMatch(/compact-at-stop reminder/)
+})
+
+test('a notice the engine queued for itself, and another session\'s message, are not reminded', async ($, on) => {
+  const seen = world(on, { tokens: 400_000, percent: 40 }, 10 * HOUR)
+  await $.prompt.submit({ ...typed, origin: { kind: 'task-notification' }, isMeta: true })
+  await $.prompt.submit({ ...typed, origin: { kind: 'peer' } })
+  expect(seen.length).toBe(2)
+  expect(seen[0]?.context).toBeUndefined()
+  expect(seen[1]?.context).toBeUndefined()
+})

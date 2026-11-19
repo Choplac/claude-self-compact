@@ -26,7 +26,9 @@ Desktop app: + → Plugins → Add marketplace → `Choplac/claude-self-compact`
 ## Reminder
 
 A session told to compact "at a stopping place" tends to forget, since nothing tells it when one has come.
-So when the person sends a prompt, and the conversation fills at least 30% of its context window (and at
+So when the person sends a prompt (terminal or phone), or a background notification arrives (a background
+command or agent ended, such as a Codex run or a test run; or a Stop hook woke the session with mail or a
+relayed chat reply), and the conversation fills at least 30% of its context window (and at
 least 150,000 tokens), and the session has not compacted itself in the last 30 minutes, one note rides
 beside that prompt. The model reads it; the person does not see it. It says to compact at the end of the
 turn if that is a stopping place, and to carry on otherwise. At most one reminder per 45 minutes.

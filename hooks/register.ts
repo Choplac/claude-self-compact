@@ -11,8 +11,15 @@ const TRIES = 10 // the engine refuses a compaction while a turn still runs
 const TRY_EVERY_MS = 1000
 
 // The reminder. A session asked to compact "at a stopping place" forgets to: nothing tells it when one
-// has come. So when the person sends a prompt and the conversation is large and has gone a while without
-// compacting itself, one note rides beside that prompt. The model reads it; the person never sees it.
+// has come. So when the person sends a prompt, or something the session waited for reports back, and the
+// conversation is large and has gone a while without compacting itself, one note rides beside that
+// prompt. The model reads it; the person never sees it.
+// Prompts that carry it: the person's own (terminal, phone bridge) and a background notification: a
+// background command or agent that ended (a Codex run, a test run, a timer) and what a Stop hook
+// delivers to wake the session (mail from another session, the person's reply relayed from Discord).
+// Measured 2026-11-19 on Claude Code 2.1.328: all of those arrive as `task-notification`, and a note
+// attached there reaches the model.
+const NUDGE_ORIGINS: ReadonlySet<string> = new Set(['composer', 'bridge', 'task-notification'])
 const NUDGE_PERCENT = 30 // share of the context window in use, and
 const NUDGE_TOKENS = 150_000 // tokens in use: both must be reached (a small window is not nagged early)
 const NUDGE_GAP_MS = 45 * 60_000 // between two reminders of one session
@@ -67,9 +74,9 @@ export const register: Register = on => {
   })
 
   on('prompt.submit', async ($, e, next) => {
-    // Only a prompt the person sent: not a slash command, a machine-made prompt or another plugin's.
-    const isPerson = e.origin.kind === 'composer' || e.origin.kind === 'bridge'
-    if (!isPerson || e.command !== undefined || e.isMeta === true) return next(e)
+    // Not a slash command, not a notice the engine queued for itself (isMeta), not another plugin's
+    // or another session's prompt.
+    if (!NUDGE_ORIGINS.has(e.origin.kind) || e.command !== undefined || e.isMeta === true) return next(e)
     let note: string | undefined
     try {
       const sessionId = await $.session.id()
