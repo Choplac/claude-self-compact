@@ -23,6 +23,7 @@ const NUDGE_ORIGINS: ReadonlySet<string> = new Set(['composer', 'bridge', 'task-
 const NUDGE_PERCENT = 30 // share of the context window in use, and
 const NUDGE_TOKENS = 150_000 // tokens in use: both must be reached (a small window is not nagged early)
 const NUDGE_GAP_MS = 45 * 60_000 // between two reminders of one session
+const NUDGE_READS_MS = 500 // the most a prompt waits for the reminder's figures; later than that, no reminder
 
 type Job = { keep: string; resume?: string; turnId: string; sessionId: string }
 
@@ -37,7 +38,8 @@ let scheduled: object | undefined // token of the one compaction waiting to run;
 // so the gap holds in this process even when $.store fails. $.store carries it over a reload or restart.
 const lastMem = new Map<string, number>()
 let writes: Promise<unknown> = Promise.resolve() // stored-time writes, in order
-const lastNudge = new Map<string, number>() // time of the last reminder per session id; starts over on a reload
+// Time of the last reminder per session id; $.store (`nudge:<id>`) carries it over a reload or restart.
+const lastNudge = new Map<string, number>()
 
 const nudge = (percent: number): string =>
   `compact-at-stop reminder: this conversation fills about ${percent}% of its context window and has not ` +
@@ -77,20 +79,35 @@ export const register: Register = on => {
     // Not a slash command, not a notice the engine queued for itself (isMeta), not another plugin's
     // or another session's prompt.
     if (!NUDGE_ORIGINS.has(e.origin.kind) || e.command !== undefined || e.isMeta === true) return next(e)
-    let note: string | undefined
-    try {
-      const sessionId = await $.session.id()
-      const now = await $.clock.now()
-      const { context } = await $.session.usage()
-      const percent = context.percent ?? 0
-      const last = Math.max(Number((await $.store.get(`last:${sessionId}`)) ?? 0), lastMem.get(sessionId) ?? 0)
-      const isLarge = percent >= NUDGE_PERCENT && (context.tokens ?? 0) >= NUDGE_TOKENS
-      if (isLarge && last + MIN_GAP_MS <= now && (lastNudge.get(sessionId) ?? 0) + NUDGE_GAP_MS <= now) {
-        lastNudge.set(sessionId, now)
-        note = nudge(percent)
+    // The figures are read beside a short wait: a read that stalls or fails means no reminder, and the
+    // prompt goes on as typed, never held up for longer than NUDGE_READS_MS.
+    const due = (async (): Promise<{ sessionId: string; now: number; percent: number } | undefined> => {
+      try {
+        const sessionId = await $.session.id()
+        const now = await $.clock.now()
+        const { context } = await $.session.usage()
+        const percent = context.percent ?? 0
+        if (percent < NUDGE_PERCENT || (context.tokens ?? 0) < NUDGE_TOKENS) return undefined
+        const last = Math.max(Number((await $.store.get(`last:${sessionId}`)) ?? 0), lastMem.get(sessionId) ?? 0)
+        if (last + MIN_GAP_MS > now) return undefined
+        const nudged = Math.max(Number((await $.store.get(`nudge:${sessionId}`)) ?? 0), lastNudge.get(sessionId) ?? 0)
+        if (nudged + NUDGE_GAP_MS > now) return undefined
+        return { sessionId, now, percent }
+      } catch {
+        return undefined
       }
-    } catch {
-      // Figures that cannot be read mean no reminder; the prompt goes on as typed.
+    })()
+    let waiting = true
+    const found = await Promise.race([
+      due,
+      new Promise<undefined>(resolve => $.clock.after(NUDGE_READS_MS, () => (waiting ? resolve(undefined) : undefined))),
+    ])
+    waiting = false
+    let note: string | undefined
+    if (found !== undefined && (lastNudge.get(found.sessionId) ?? 0) + NUDGE_GAP_MS <= found.now) {
+      lastNudge.set(found.sessionId, found.now)
+      void $.store.set(`nudge:${found.sessionId}`, found.now).catch(() => undefined) // not waited for
+      note = nudge(found.percent)
     }
     return next(note === undefined ? e : { ...e, context: [...(e.context ?? []), note] })
   })
